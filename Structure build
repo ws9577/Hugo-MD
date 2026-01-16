@@ -1,0 +1,220 @@
+/srv/www/
+├── site/                     # Public web root
+│   ├── index.html
+│   ├── assets/
+│   │   ├── css/
+│   │   ├── js/
+│   │   └── images/
+│   │
+│   ├── blog/                  # Generated blog output
+│   │   ├── index.html
+│   │   └── posts/
+│   │
+│   ├── stories/               # TWINE exports
+│   │   ├── story-1/
+│   │   │   └── index.html
+│   │   ├── story-2/
+│   │   │   └── index.html
+│   │   └── index.html
+│   │
+│   ├── search/                # Static search index
+│   │   └── pagefind/
+│   │
+│   └── comments/              # Optional comment embed
+│
+├── build/                     # Source content (NOT public)
+│   ├── blog-src/              # Markdown
+│   └── twine-src/             # .twee or .html originals
+│
+└── backups/
+
+# /site = read-only deploy target
+# /build = authoring & Git repo
+# TWINE stories drop in without rebuild
+# Easy to rsync /srv/www/site
+
+Minimal Nginx config (static-only, hardened)
+server {
+    listen 80;
+    server_name example.com;
+
+    root /srv/www/site;
+    index index.html;
+
+    # Security headers
+    add_header X-Content-Type-Options nosniff;
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header Referrer-Policy strict-origin-when-cross-origin;
+    add_header Content-Security-Policy "
+        default-src 'self';
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data:;
+    ";
+
+    # No PHP, no CGI
+    location ~ \.php$ { return 444; }
+
+    # Static files
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # TWINE stories (large JS allowed)
+    location /stories/ {
+        add_header Cache-Control "public, max-age=31536000";
+    }
+
+    # Deny dotfiles
+    location ~ /\.(?!well-known) {
+        deny all;
+    }
+
+    access_log off;
+    error_log /var/log/nginx/site.error.log warn;
+}
+
+# No PHP execution possible
+# No file upload
+# No DB access
+# No auth bypass paths
+
+Comment & search solutions (NO database)
+# setup
+# bash
+pagefind --site /srv/www/site
+
+# Embed:
+# html
+<script src="/search/pagefind/pagefind-ui.js"></script>
+<link rel="stylesheet" href="/search/pagefind/pagefind-ui.css">
+<div id="search"></div>
+<script>
+  new PagefindUI({ element: "#search" });
+</script>
+
+Comments (pick one)
+
+Option A: Giscus (GitHub-based)
+Best security, lowest maintenance
+Uses GitHub Discussions
+No server needed
+No DB
+
+Markdown comments
+
+<script src="https://giscus.app/client.js"
+  data-repo="user/repo"
+  data-category="Comments"
+  data-mapping="pathname"
+  data-theme="light"
+  crossorigin="anonymous"
+  async>
+</script>
+
+Option B: Remark42 (self-hosted)
+
+If you must self-host:
+Single binary
+SQLite backend
+Can be isolated in Docker
+Reverse-proxy protected
+
+Decommission WordPress safely
+Step-by-step (no downtime)
+1. Freeze WordPress
+chmod -R a-w /var/www/wordpress
+
+2. Export content
+wp export --dir=/root/wp-export
+
+3. Convert to Markdown
+pandoc *.xml -o posts.md
+
+4. Rebuild static blog
+
+Hugo/Zola from Markdown
+
+Verify URLs match old slugs
+
+5. 301 redirect old URLs
+location /wp-content/ { return 410; }
+location /wp-admin/ { return 444; }
+
+6. Archive WordPress
+tar czf wordpress-archive.tgz /var/www/wordpress
+systemctl disable apache2 php-fpm mariadb
+
+5️⃣ Member / user management (without CMS hell)
+Reality check
+
+If you need:
+Login
+Roles
+Password resets
+
+👉 You are reintroducing attack surface
+
+Recommended models
+🔐 Model A: No accounts (best)
+Public content
+Git-based authoring
+Admin access via SSH only
+
+🔐 Model B: Auth via reverse proxy
+Use:
+Authelia
+Authentik
+Protect:
+/admin/
+/preview/
+/drafts/
+Users authenticate before reaching Nginx.
+
+Remote access / management (self-hosted CMS alternative)
+Replace CMS with:
+Git
+SSH
+CI/CD (optional)
+
+Example workflow
+Local edit (Markdown / TWINE)
+   ↓
+git push
+   ↓
+CI build (Hugo/Zola)
+   ↓
+rsync to /srv/www/site
+
+Hardening
+SSH keys only
+Fail2Ban
+Separate deploy user
+chmod -R 755 site
+No admin panel = no admin exploit.
+
+7️⃣ Internal backup solutions (simple & reliable)
+Tiered backup strategy
+1️⃣ Content (most important)
+rsync -a --delete /srv/www/site backup:/backups/site/
+2️⃣ Build sources (Git)
+Self-hosted Gitea
+Or bare Git repo over SSH
+3️⃣ System snapshots
+LVM snapshot
+Or borgbackup
+borg create repo::site-$(date +%F) /srv/www
+4️⃣ Off-site (encrypted)
+borg prune --keep-daily=7 --keep-weekly=4
+
+Final recommended stack (for you)
+Layer	Choice
+OS	Ubuntu LTS (proxy) + Alpine (static host)
+Web	Nginx only
+Content	TWINE + Hugo/Zola
+DB	None / SQLite only
+Auth	Authelia (optional)
+Comments	Giscus
+Search	Pagefind
+Backup	Borg + rsync
+
